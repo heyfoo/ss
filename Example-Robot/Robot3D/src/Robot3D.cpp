@@ -1,5 +1,4 @@
 #define _USE_MATH_DEFINES
-#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -17,48 +16,69 @@ const int vWidth = 800;
 const int vHeight = 600;
 
 const float boothWidth = 18.0f;
-const float boothDepth = 10.0f;
-const float boothHeight = 12.0f;
-const float trackHeight = 9.0f;
-const float trackFrontZ = 6.0f;
+const float boothDepth = 9.0f;
+const float boothHeight = 10.0f;
 
-const float pathLeftX = -8.0f;
-const float pathRightX = 8.0f;
-const float arcRadius = 3.0f;
-const float backZ = trackFrontZ - arcRadius;
-const float backY = trackHeight - arcRadius;
+const float groundLevel = 0.0f;
 
-enum class TargetPhase
+const float waterLeftX = -6.0f;
+const float waterRightX = 6.0f;
+const float waterBaseHeight = 4.0f;
+const float waterThickness = 0.8f;
+const float waterFrontZ = 2.2f;
+const float waterBackZ = -2.2f;
+const int waterResolution = 48;
+const float waterWaveCycles = 2.0f;
+const float waterWaveAmplitude = 0.6f;
+const float waterWaveSpeed = 1.6f;
+
+const float objectSpeed = 2.6f;
+const float gravity = 18.0f;
+const float waitDuration = 1.6f;
+const float objectZPosition = 0.0f;
+
+enum class WaterState
 {
-        MoveFront,
-        RotateDown,
-        MoveBack,
-        RotateUp
+Wavy,
+Flat
 };
 
-TargetPhase targetPhase = TargetPhase::MoveFront;
+enum class ObjectState
+{
+Duck,
+TargetOnly
+};
 
-float frontProgress = 0.0f;
-float rotateProgress = 0.0f;
-float backProgress = 0.0f;
+enum class MovementPhase
+{
+MoveAcross,
+Falling,
+Waiting
+};
 
-float targetPosX = pathLeftX;
-float targetPosY = trackHeight;
-float targetPosZ = trackFrontZ;
-float basePitch = 0.0f;
-float flipAngle = 0.0f;
-float flipTargetAngle = 0.0f;
+enum class CameraState
+{
+Front,
+Perspective
+};
 
-const float frontSpeed = 5.5f;
-const float backSpeed = 4.5f;
-const float rotationDuration = 1.4f;
-const float flipDuration = 1.2f;
-const float flipSpeed = 90.0f / flipDuration;
-const float sineAmplitude = 0.8f;
-const float sineFrequency = 2.0f * static_cast<float>(M_PI);
-const float waveSpeed = 1.5f;
+struct SceneState
+{
+WaterState water = WaterState::Wavy;
+ObjectState object = ObjectState::Duck;
+MovementPhase movement = MovementPhase::MoveAcross;
+CameraState camera = CameraState::Front;
+};
 
-float wavePhase = 0.0f;
+SceneState sceneState;
+
+float waterTime = 0.0f;
+std::vector<float> waterHeights(waterResolution + 1, waterBaseHeight);
+
+float objectPosX = waterLeftX;
+float objectPosY = waterBaseHeight;
+float objectVelocityY = 0.0f;
+float waitTimer = 0.0f;
 
 QuadMesh *groundMesh = NULL;
 int meshSize = 32;
@@ -73,24 +93,6 @@ GLfloat light_diffuse[] = { 1.0F, 1.0F, 1.0F, 1.0F };
 GLfloat light_specular[] = { 1.0F, 1.0F, 1.0F, 1.0F };
 GLfloat light_ambient[] = { 0.9F, 0.9F, 0.9F, 1.0F };
 
-float cameraAzimuth = 0.0f;
-float cameraElevation = 22.0f;
-float cameraRadius = 30.0f;
-float cameraTargetRadius = 30.0f;
-
-const float minRadius = 18.0f;
-const float maxRadius = 46.0f;
-const float minElevation = 12.0f;
-const float maxElevation = 62.0f;
-const float orbitSensitivity = 0.25f;
-const float elevationSensitivity = 0.2f;
-const float zoomSensitivity = 0.2f;
-
-bool leftButtonDown = false;
-bool rightButtonDown = false;
-int lastMouseX = 0;
-int lastMouseY = 0;
-
 int lastFrameTime = 0;
 
 GLUquadric *targetQuadric = NULL;
@@ -99,16 +101,22 @@ void initOpenGL(int w, int h);
 void display(void);
 void reshape(int w, int h);
 void keyboard(unsigned char key, int x, int y);
-void mouse(int button, int state, int x, int y);
-void mouseMotionHandler(int xMouse, int yMouse);
 void animationHandler(int param);
 
 void updateAnimation(float dt);
+void applyCamera();
+void updateWaterSurface();
+float computeWaterHeight(float x);
+float getObjectFloatOffset();
+float getObjectGroundOffset();
+void resetMovement();
+
 void drawGround();
 void drawBooth();
-void drawWaterWave();
-void drawTarget();
+void drawWater();
+void drawActiveObject();
 void drawDuck();
+void drawTarget();
 void setMaterial(const GLfloat ambient[4], const GLfloat diffuse[4], const GLfloat specular[4], GLfloat shininess);
 
 GLuint buildGroundProgram();
@@ -116,23 +124,21 @@ GLuint compileShader(GLenum type, const char *src);
 
 int main(int argc, char **argv)
 {
-        glutInit(&argc, argv);
-        glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH);
-        glutInitWindowSize(vWidth, vHeight);
-        glutInitWindowPosition(200, 30);
-        glutCreateWindow("Carnival Target Shoot");
+glutInit(&argc, argv);
+glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH);
+glutInitWindowSize(vWidth, vHeight);
+glutInitWindowPosition(200, 30);
+glutCreateWindow("Carnival Target Shoot");
 
-        initOpenGL(vWidth, vHeight);
+initOpenGL(vWidth, vHeight);
 
-        glutDisplayFunc(display);
-        glutReshapeFunc(reshape);
-        glutMouseFunc(mouse);
-        glutMotionFunc(mouseMotionHandler);
-        glutKeyboardFunc(keyboard);
+glutDisplayFunc(display);
+glutReshapeFunc(reshape);
+glutKeyboardFunc(keyboard);
 
-        glutTimerFunc(16, animationHandler, 0);
+glutTimerFunc(16, animationHandler, 0);
 
-        glutMainLoop();
+glutMainLoop();
         return 0;
 }
 
@@ -175,43 +181,43 @@ void initOpenGL(int w, int h)
         Vector3 ambient = Vector3(0.02f, 0.05f, 0.02f);
         Vector3 diffuse = Vector3(groundBaseColor.x, groundBaseColor.y, groundBaseColor.z);
         Vector3 specular = Vector3(0.1f, 0.1f, 0.1f);
-        groundMesh->SetMaterial(ambient, diffuse, specular, 4.0);
+groundMesh->SetMaterial(ambient, diffuse, specular, 4.0);
 
-        groundProgram = buildGroundProgram();
-        groundColorLocation = glGetUniformLocation(groundProgram, "uBaseColor");
-        groundMesh->CreateMeshVBO(meshSize, 0, 1);
+groundProgram = buildGroundProgram();
+groundColorLocation = glGetUniformLocation(groundProgram, "uBaseColor");
+groundMesh->CreateMeshVBO(meshSize, 0, 1);
 
-        targetQuadric = gluNewQuadric();
+targetQuadric = gluNewQuadric();
+if (targetQuadric)
+{
+gluQuadricNormals(targetQuadric, GLU_SMOOTH);
+}
 
-        reshape(w, h);
-        lastFrameTime = glutGet(GLUT_ELAPSED_TIME);
-        updateAnimation(0.0f);
+reshape(w, h);
+lastFrameTime = glutGet(GLUT_ELAPSED_TIME);
+updateWaterSurface();
+objectPosX = waterLeftX;
+sceneState.movement = MovementPhase::MoveAcross;
+objectVelocityY = 0.0f;
+waitTimer = 0.0f;
+objectPosY = computeWaterHeight(objectPosX) + getObjectFloatOffset();
 }
 
 void display(void)
 {
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        glLoadIdentity();
+glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+glLoadIdentity();
+applyCamera();
 
-        const float degToRad = static_cast<float>(M_PI) / 180.0f;
-        float azRad = cameraAzimuth * degToRad;
-        float elRad = cameraElevation * degToRad;
-        float cosEl = std::cos(elRad);
-        float eyeX = cameraRadius * std::sin(azRad) * cosEl;
-        float eyeY = cameraRadius * std::sin(elRad);
-        float eyeZ = cameraRadius * std::cos(azRad) * cosEl;
+glLightfv(GL_LIGHT0, GL_POSITION, light_position0);
+glLightfv(GL_LIGHT1, GL_POSITION, light_position1);
 
-        gluLookAt(eyeX, eyeY, eyeZ, 0.0f, 4.5f, 0.0f, 0.0f, 1.0f, 0.0f);
+drawGround();
+drawBooth();
+drawWater();
+drawActiveObject();
 
-        glLightfv(GL_LIGHT0, GL_POSITION, light_position0);
-        glLightfv(GL_LIGHT1, GL_POSITION, light_position1);
-
-        drawGround();
-        drawBooth();
-        drawWaterWave();
-        drawTarget();
-
-        glutSwapBuffers();
+glutSwapBuffers();
 }
 
 void reshape(int w, int h)
@@ -228,85 +234,49 @@ void reshape(int w, int h)
 
 void keyboard(unsigned char key, int x, int y)
 {
-        switch (key)
-        {
-        case 27:
-                std::exit(0);
-                break;
-        case 'f':
-        case 'F':
-                if (targetPhase == TargetPhase::MoveFront && flipTargetAngle >= 0.0f)
-                {
-                        flipTargetAngle = -90.0f;
-                }
-                break;
-        case 'r':
-        case 'R':
-                targetPhase = TargetPhase::MoveFront;
-                frontProgress = rotateProgress = backProgress = 0.0f;
-                targetPosX = pathLeftX;
-                targetPosY = trackHeight;
-                targetPosZ = trackFrontZ;
-                basePitch = 0.0f;
-                flipTargetAngle = 0.0f;
-                break;
-        default:
-                break;
-        }
-
-        glutPostRedisplay();
+switch (key)
+{
+case 27:
+std::exit(0);
+break;
+case 'w':
+case 'W':
+case '1':
+sceneState.water = (sceneState.water == WaterState::Wavy) ? WaterState::Flat : WaterState::Wavy;
+updateWaterSurface();
+if (sceneState.movement == MovementPhase::MoveAcross)
+{
+objectPosY = computeWaterHeight(objectPosX) + getObjectFloatOffset();
+}
+break;
+case 'd':
+case 'D':
+case '2':
+sceneState.object = (sceneState.object == ObjectState::Duck) ? ObjectState::TargetOnly : ObjectState::Duck;
+if (sceneState.movement == MovementPhase::MoveAcross)
+{
+objectPosY = computeWaterHeight(objectPosX) + getObjectFloatOffset();
+}
+else if (sceneState.movement == MovementPhase::Waiting)
+{
+objectPosY = groundLevel + getObjectGroundOffset();
+}
+break;
+case 'c':
+case 'C':
+case '4':
+sceneState.camera = (sceneState.camera == CameraState::Front) ? CameraState::Perspective : CameraState::Front;
+break;
+case 'r':
+case 'R':
+case '3':
+resetMovement();
+break;
+default:
+break;
 }
 
-void mouse(int button, int state, int x, int y)
-{
-        if (button == GLUT_LEFT_BUTTON)
-        {
-                leftButtonDown = (state == GLUT_DOWN);
-                lastMouseX = x;
-                lastMouseY = y;
-        }
-        else if (button == GLUT_RIGHT_BUTTON)
-        {
-                rightButtonDown = (state == GLUT_DOWN);
-                lastMouseX = x;
-                lastMouseY = y;
-        }
-
-        glutPostRedisplay();
-}
-
-void mouseMotionHandler(int xMouse, int yMouse)
-{
-        int dx = xMouse - lastMouseX;
-        int dy = yMouse - lastMouseY;
-
-        if (leftButtonDown)
-        {
-                cameraAzimuth += dx * orbitSensitivity;
-                cameraElevation -= dy * elevationSensitivity;
-                if (cameraAzimuth > 70.0f)
-                        cameraAzimuth = 70.0f;
-                if (cameraAzimuth < -70.0f)
-                        cameraAzimuth = -70.0f;
-                if (cameraElevation > maxElevation)
-                        cameraElevation = maxElevation;
-                if (cameraElevation < minElevation)
-                        cameraElevation = minElevation;
-        }
-
-        if (rightButtonDown)
-        {
-                cameraTargetRadius += dy * zoomSensitivity;
-                if (cameraTargetRadius > maxRadius)
-                        cameraTargetRadius = maxRadius;
-                if (cameraTargetRadius < minRadius)
-                        cameraTargetRadius = minRadius;
-        }
-
-        lastMouseX = xMouse;
-        lastMouseY = yMouse;
-
-        glutPostRedisplay();
+glutPostRedisplay();
 }
 
 void animationHandler(int param)
@@ -325,134 +295,105 @@ void animationHandler(int param)
 
 void updateAnimation(float dt)
 {
-        const float twoPi = 2.0f * static_cast<float>(M_PI);
-        float distance = pathRightX - pathLeftX;
+waterTime += dt;
+updateWaterSurface();
 
-        wavePhase += dt * waveSpeed;
-        if (wavePhase > twoPi)
-        {
-                wavePhase = std::fmod(wavePhase, twoPi);
-        }
+switch (sceneState.movement)
+{
+case MovementPhase::MoveAcross:
+objectPosX += objectSpeed * dt;
+if (objectPosX >= waterRightX)
+{
+objectPosX = waterRightX;
+sceneState.movement = MovementPhase::Falling;
+objectVelocityY = 0.0f;
+}
+objectPosY = computeWaterHeight(objectPosX) + getObjectFloatOffset();
+break;
+case MovementPhase::Falling:
+objectVelocityY -= gravity * dt;
+objectPosY += objectVelocityY * dt;
+if (objectPosY <= groundLevel + getObjectGroundOffset())
+{
+objectPosY = groundLevel + getObjectGroundOffset();
+objectVelocityY = 0.0f;
+sceneState.movement = MovementPhase::Waiting;
+waitTimer = waitDuration;
+}
+break;
+case MovementPhase::Waiting:
+if (waitTimer > 0.0f)
+{
+waitTimer -= dt;
+if (waitTimer <= 0.0f)
+{
+objectPosX = waterLeftX;
+objectVelocityY = 0.0f;
+sceneState.movement = MovementPhase::MoveAcross;
+objectPosY = computeWaterHeight(objectPosX) + getObjectFloatOffset();
+waitTimer = 0.0f;
+}
+}
+break;
+}
+}
 
-        if (std::fabs(flipAngle - flipTargetAngle) > 0.01f)
-        {
-                float direction = (flipTargetAngle > flipAngle) ? 1.0f : -1.0f;
-                float step = flipSpeed * dt;
-                if (std::fabs(flipTargetAngle - flipAngle) <= step)
-                {
-                        flipAngle = flipTargetAngle;
-                }
-                else
-                {
-                        flipAngle += direction * step;
-                }
-        }
-        else
-        {
-                flipAngle = flipTargetAngle;
-        }
+void applyCamera()
+{
+switch (sceneState.camera)
+{
+case CameraState::Front:
+gluLookAt(0.0f, 6.0f, 24.0f, 0.0f, 4.0f, 0.0f, 0.0f, 1.0f, 0.0f);
+break;
+case CameraState::Perspective:
+gluLookAt(-16.0f, 9.0f, 18.0f, 0.0f, 4.0f, 0.0f, 0.0f, 1.0f, 0.0f);
+break;
+}
+}
 
-        float smoothing = std::min(1.0f, dt * 5.0f);
-        cameraRadius += (cameraTargetRadius - cameraRadius) * smoothing;
+void updateWaterSurface()
+{
+float step = (waterRightX - waterLeftX) / static_cast<float>(waterResolution);
+for (int i = 0; i <= waterResolution; ++i)
+{
+float x = waterLeftX + step * i;
+waterHeights[i] = computeWaterHeight(x);
+}
+}
 
-        switch (targetPhase)
-        {
-        case TargetPhase::MoveFront:
-        {
-                float advance = (frontSpeed * dt) / distance;
-                frontProgress += advance;
-                if (frontProgress >= 1.0f)
-                {
-                        frontProgress = 1.0f;
-                        targetPosX = pathRightX;
-                        targetPosY = trackHeight;
-                        targetPosZ = trackFrontZ;
-                        basePitch = 0.0f;
-                        targetPhase = TargetPhase::RotateDown;
-                        rotateProgress = 0.0f;
-                }
-                else
-                {
-                        float t = frontProgress;
-                        targetPosX = pathLeftX + (pathRightX - pathLeftX) * t;
-                        float sineValue = std::sin(wavePhase + t * sineFrequency);
-                        targetPosY = trackHeight + sineAmplitude * sineValue;
-                        targetPosZ = trackFrontZ;
-                        basePitch = 0.0f;
-                }
-                break;
-        }
-        case TargetPhase::RotateDown:
-        {
-                float advance = dt / rotationDuration;
-                rotateProgress += advance;
-                if (rotateProgress >= 1.0f)
-                {
-                        rotateProgress = 1.0f;
-                }
-                float angleDeg = 90.0f + rotateProgress * 90.0f;
-                float angleRad = angleDeg * static_cast<float>(M_PI) / 180.0f;
-                targetPosX = pathRightX;
-                targetPosY = trackHeight + arcRadius * std::cos(angleRad);
-                targetPosZ = (trackFrontZ - arcRadius) + arcRadius * std::sin(angleRad);
-                basePitch = -(angleDeg - 90.0f);
-                if (rotateProgress >= 1.0f)
-                {
-                        targetPhase = TargetPhase::MoveBack;
-                        backProgress = 0.0f;
-                        flipTargetAngle = 0.0f;
-                }
-                break;
-        }
-        case TargetPhase::MoveBack:
-        {
-                float advance = (backSpeed * dt) / distance;
-                backProgress += advance;
-                if (backProgress >= 1.0f)
-                {
-                        backProgress = 1.0f;
-                        targetPosX = pathLeftX;
-                        targetPosY = backY;
-                        targetPosZ = backZ;
-                        targetPhase = TargetPhase::RotateUp;
-                        rotateProgress = 0.0f;
-                }
-                else
-                {
-                        float t = backProgress;
-                        targetPosX = pathRightX - (pathRightX - pathLeftX) * t;
-                        targetPosY = backY;
-                        targetPosZ = backZ;
-                }
-                basePitch = -90.0f;
-                break;
-        }
-        case TargetPhase::RotateUp:
-        {
-                float advance = dt / rotationDuration;
-                rotateProgress += advance;
-                if (rotateProgress >= 1.0f)
-                {
-                        rotateProgress = 1.0f;
-                }
-                float angleDeg = 180.0f - rotateProgress * 90.0f;
-                float angleRad = angleDeg * static_cast<float>(M_PI) / 180.0f;
-                targetPosX = pathLeftX;
-                targetPosY = trackHeight + arcRadius * std::cos(angleRad);
-                targetPosZ = (trackFrontZ - arcRadius) + arcRadius * std::sin(angleRad);
-                basePitch = -(angleDeg - 90.0f);
-                if (rotateProgress >= 1.0f)
-                {
-                        targetPhase = TargetPhase::MoveFront;
-                        frontProgress = 0.0f;
-                        basePitch = 0.0f;
-                        targetPosY = trackHeight;
-                        targetPosZ = trackFrontZ;
-                        flipTargetAngle = 0.0f;
-                }
-                break;
-        }
-        }
+float computeWaterHeight(float x)
+{
+float clampedX = x;
+if (clampedX < waterLeftX)
+clampedX = waterLeftX;
+if (clampedX > waterRightX)
+clampedX = waterRightX;
+if (sceneState.water == WaterState::Flat)
+{
+return waterBaseHeight;
+}
+float normalized = (clampedX - waterLeftX) / (waterRightX - waterLeftX);
+float phase = static_cast<float>(M_PI) * 2.0f * (waterWaveCycles * normalized) + waterWaveSpeed * waterTime;
+return waterBaseHeight + waterWaveAmplitude * std::sin(phase);
+}
+
+float getObjectFloatOffset()
+{
+return (sceneState.object == ObjectState::Duck) ? 0.8f : 0.45f;
+}
+
+float getObjectGroundOffset()
+{
+return (sceneState.object == ObjectState::Duck) ? 0.9f : 0.35f;
+}
+
+void resetMovement()
+{
+sceneState.movement = MovementPhase::MoveAcross;
+objectPosX = waterLeftX;
+objectVelocityY = 0.0f;
+waitTimer = 0.0f;
+objectPosY = computeWaterHeight(objectPosX) + getObjectFloatOffset();
 }
 
 void drawGround()
@@ -475,212 +416,248 @@ void drawGround()
 
 void drawBooth()
 {
-        const GLfloat woodAmbient[] = { 0.25f, 0.14f, 0.08f, 1.0f };
-        const GLfloat woodDiffuse[] = { 0.55f, 0.3f, 0.12f, 1.0f };
-        const GLfloat woodSpecular[] = { 0.2f, 0.2f, 0.2f, 1.0f };
-        const GLfloat curtainAmbient[] = { 0.08f, 0.02f, 0.08f, 1.0f };
-        const GLfloat curtainDiffuse[] = { 0.6f, 0.15f, 0.55f, 1.0f };
-        const GLfloat curtainSpecular[] = { 0.3f, 0.2f, 0.3f, 1.0f };
+const GLfloat boothAmbient[] = { 0.18f, 0.18f, 0.18f, 1.0f };
+const GLfloat boothDiffuse[] = { 0.55f, 0.55f, 0.58f, 1.0f };
+const GLfloat boothSpecular[] = { 0.2f, 0.2f, 0.22f, 1.0f };
+const GLfloat trimAmbient[] = { 0.12f, 0.12f, 0.15f, 1.0f };
+const GLfloat trimDiffuse[] = { 0.35f, 0.35f, 0.4f, 1.0f };
+const GLfloat trimSpecular[] = { 0.3f, 0.3f, 0.35f, 1.0f };
+const GLfloat panelAmbient[] = { 0.08f, 0.08f, 0.1f, 1.0f };
+const GLfloat panelDiffuse[] = { 0.3f, 0.3f, 0.35f, 1.0f };
+const GLfloat panelSpecular[] = { 0.15f, 0.15f, 0.2f, 1.0f };
 
-        setMaterial(woodAmbient, woodDiffuse, woodSpecular, 24.0f);
+setMaterial(boothAmbient, boothDiffuse, boothSpecular, 20.0f);
 
-        glPushMatrix();
-        glTranslatef(0.0f, -0.75f, 0.0f);
-        glScalef(boothWidth + 4.0f, 1.5f, boothDepth + 4.0f);
-        glutSolidCube(1.0f);
-        glPopMatrix();
+glPushMatrix();
+glTranslatef(0.0f, 0.2f, 0.0f);
+glScalef(boothWidth, 0.4f, boothDepth);
+glutSolidCube(1.0f);
+glPopMatrix();
 
-        float postHeight = boothHeight;
-        float postThickness = 0.8f;
-        for (int i = -1; i <= 1; i += 2)
-        {
-                for (int j = -1; j <= 1; j += 2)
-                {
-                        glPushMatrix();
-                        glTranslatef((boothWidth / 2.0f) * i, postHeight / 2.0f, (boothDepth / 2.0f) * j);
-                        glScalef(postThickness, postHeight, postThickness);
-                        glutSolidCube(1.0f);
-                        glPopMatrix();
-                }
-        }
+glPushMatrix();
+glTranslatef(-boothWidth / 2.0f + 0.3f, boothHeight / 2.0f + 0.4f, 0.0f);
+glScalef(0.6f, boothHeight, boothDepth);
+glutSolidCube(1.0f);
+glPopMatrix();
 
-        glPushMatrix();
-        glTranslatef(0.0f, boothHeight - 0.4f, boothDepth / 2.0f);
-        glScalef(boothWidth, 1.2f, 0.6f);
-        glutSolidCube(1.0f);
-        glPopMatrix();
+glPushMatrix();
+glTranslatef(boothWidth / 2.0f - 0.3f, boothHeight / 2.0f + 0.4f, 0.0f);
+glScalef(0.6f, boothHeight, boothDepth);
+glutSolidCube(1.0f);
+glPopMatrix();
 
-        glPushMatrix();
-        glTranslatef(0.0f, boothHeight - 0.4f, -boothDepth / 2.0f);
-        glScalef(boothWidth, 1.2f, 0.6f);
-        glutSolidCube(1.0f);
-        glPopMatrix();
+glPushMatrix();
+glTranslatef(0.0f, boothHeight / 2.0f + 0.4f, -boothDepth / 2.0f + 0.3f);
+glScalef(boothWidth, boothHeight, 0.6f);
+glutSolidCube(1.0f);
+glPopMatrix();
 
-        glPushMatrix();
-        glTranslatef(0.0f, boothHeight, 0.0f);
-        glScalef(boothWidth, 0.6f, boothDepth);
-        glutSolidCube(1.0f);
-        glPopMatrix();
+setMaterial(trimAmbient, trimDiffuse, trimSpecular, 30.0f);
+glPushMatrix();
+glTranslatef(0.0f, boothHeight + 0.8f, 0.0f);
+glScalef(boothWidth + 0.8f, 0.6f, boothDepth + 0.8f);
+glutSolidCube(1.0f);
+glPopMatrix();
 
-        setMaterial(curtainAmbient, curtainDiffuse, curtainSpecular, 38.0f);
-        glPushMatrix();
-        glTranslatef(0.0f, boothHeight / 2.0f, -boothDepth / 2.0f + 0.3f);
-        glScalef(boothWidth - 1.8f, boothHeight - 1.2f, 0.6f);
-        glutSolidCube(1.0f);
-        glPopMatrix();
-
-        glPushMatrix();
-        glTranslatef(-boothWidth / 2.2f, boothHeight / 2.5f, boothDepth / 2.0f - 0.4f);
-        glScalef(1.2f, boothHeight - 2.5f, 0.4f);
-        glutSolidCube(1.0f);
-        glPopMatrix();
-
-        glPushMatrix();
-        glTranslatef(boothWidth / 2.2f, boothHeight / 2.5f, boothDepth / 2.0f - 0.4f);
-        glScalef(1.2f, boothHeight - 2.5f, 0.4f);
-        glutSolidCube(1.0f);
-        glPopMatrix();
+setMaterial(panelAmbient, panelDiffuse, panelSpecular, 12.0f);
+glPushMatrix();
+glTranslatef(0.0f, boothHeight / 2.0f + 0.6f, -boothDepth / 2.0f + 0.1f);
+glScalef(boothWidth - 1.2f, boothHeight - 1.4f, 0.2f);
+glutSolidCube(1.0f);
+glPopMatrix();
 }
 
-void drawWaterWave()
+void drawWater()
 {
-        const GLfloat waterAmbient[] = { 0.0f, 0.05f, 0.12f, 1.0f };
-        const GLfloat waterDiffuse[] = { 0.2f, 0.4f, 0.8f, 1.0f };
-        const GLfloat waterSpecular[] = { 0.3f, 0.3f, 0.5f, 1.0f };
+float bottomY = waterBaseHeight - waterThickness;
 
-        setMaterial(waterAmbient, waterDiffuse, waterSpecular, 48.0f);
+const GLfloat waterAmbient[] = { 0.02f, 0.07f, 0.12f, 1.0f };
+const GLfloat waterDiffuse[] = { 0.25f, 0.45f, 0.85f, 1.0f };
+const GLfloat waterSpecular[] = { 0.4f, 0.4f, 0.5f, 1.0f };
 
-        int segments = 48;
-        float width = pathRightX - pathLeftX;
-        float step = width / segments;
-        float startX = -width / 2.0f;
+setMaterial(waterAmbient, waterDiffuse, waterSpecular, 30.0f);
 
-        glPushMatrix();
-        glTranslatef(0.0f, trackHeight - 0.6f, trackFrontZ + 0.45f);
-        glBegin(GL_TRIANGLE_STRIP);
-        for (int i = 0; i <= segments; ++i)
-        {
-                        float t = static_cast<float>(i) / segments;
-                        float x = startX + step * i;
-                        float crest = sineAmplitude * std::sin(wavePhase + t * sineFrequency);
-                        float yTop = crest + 0.5f;
-                        float yBottom = -0.9f;
-                        glNormal3f(0.0f, 0.0f, 1.0f);
-                        glVertex3f(x, yTop, 0.0f);
-                        glVertex3f(x, yBottom, 0.0f);
-        }
-        glEnd();
-        glPopMatrix();
+glBegin(GL_QUADS);
+glNormal3f(0.0f, 0.0f, 1.0f);
+glVertex3f(waterLeftX, bottomY, waterFrontZ);
+glVertex3f(waterRightX, bottomY, waterFrontZ);
+glVertex3f(waterRightX, waterBaseHeight, waterFrontZ);
+glVertex3f(waterLeftX, waterBaseHeight, waterFrontZ);
+
+glNormal3f(0.0f, 0.0f, -1.0f);
+glVertex3f(waterRightX, bottomY, waterBackZ);
+glVertex3f(waterLeftX, bottomY, waterBackZ);
+glVertex3f(waterLeftX, waterBaseHeight, waterBackZ);
+glVertex3f(waterRightX, waterBaseHeight, waterBackZ);
+
+glNormal3f(1.0f, 0.0f, 0.0f);
+glVertex3f(waterRightX, bottomY, waterFrontZ);
+glVertex3f(waterRightX, bottomY, waterBackZ);
+glVertex3f(waterRightX, waterBaseHeight, waterBackZ);
+glVertex3f(waterRightX, waterBaseHeight, waterFrontZ);
+
+glNormal3f(-1.0f, 0.0f, 0.0f);
+glVertex3f(waterLeftX, bottomY, waterBackZ);
+glVertex3f(waterLeftX, bottomY, waterFrontZ);
+glVertex3f(waterLeftX, waterBaseHeight, waterFrontZ);
+glVertex3f(waterLeftX, waterBaseHeight, waterBackZ);
+
+glNormal3f(0.0f, -1.0f, 0.0f);
+glVertex3f(waterLeftX, bottomY, waterBackZ);
+glVertex3f(waterRightX, bottomY, waterBackZ);
+glVertex3f(waterRightX, bottomY, waterFrontZ);
+glVertex3f(waterLeftX, bottomY, waterFrontZ);
+glEnd();
+
+glDisable(GL_LIGHTING);
+glColor3f(0.55f, 0.78f, 0.95f);
+float step = (waterRightX - waterLeftX) / static_cast<float>(waterResolution);
+for (int i = 0; i < waterResolution; ++i)
+{
+float x0 = waterLeftX + step * i;
+float x1 = x0 + step;
+float y0 = waterHeights[i];
+float y1 = waterHeights[i + 1];
+
+glBegin(GL_TRIANGLE_STRIP);
+glVertex3f(x0, y0, waterFrontZ);
+glVertex3f(x0, y0, waterBackZ);
+glVertex3f(x1, y1, waterFrontZ);
+glVertex3f(x1, y1, waterBackZ);
+glEnd();
+}
+glEnable(GL_LIGHTING);
 }
 
-void drawTarget()
+void drawActiveObject()
 {
-        const GLfloat metalAmbient[] = { 0.12f, 0.12f, 0.14f, 1.0f };
-        const GLfloat metalDiffuse[] = { 0.5f, 0.5f, 0.55f, 1.0f };
-        const GLfloat metalSpecular[] = { 0.9f, 0.9f, 0.95f, 1.0f };
-
-        setMaterial(metalAmbient, metalDiffuse, metalSpecular, 64.0f);
-        glPushMatrix();
-        glTranslatef(0.0f, trackHeight + 0.5f, trackFrontZ);
-        glScalef((pathRightX - pathLeftX) + 4.0f, 0.3f, 0.6f);
-        glutSolidCube(1.0f);
-        glPopMatrix();
-
-        glPushMatrix();
-        glTranslatef(targetPosX, targetPosY, targetPosZ);
-        glRotatef(basePitch + flipAngle, 1.0f, 0.0f, 0.0f);
-        drawDuck();
-        glPopMatrix();
+glPushMatrix();
+glTranslatef(objectPosX, objectPosY, objectZPosition);
+if (sceneState.object == ObjectState::Duck)
+{
+drawDuck();
+}
+else
+{
+drawTarget();
+}
+glPopMatrix();
 }
 
 void drawDuck()
 {
-        const GLfloat bodyAmbient[] = { 0.28f, 0.2f, 0.05f, 1.0f };
-        const GLfloat bodyDiffuse[] = { 0.95f, 0.78f, 0.18f, 1.0f };
-        const GLfloat bodySpecular[] = { 0.5f, 0.5f, 0.3f, 1.0f };
-        const GLfloat wingAmbient[] = { 0.26f, 0.18f, 0.05f, 1.0f };
-        const GLfloat wingDiffuse[] = { 0.85f, 0.7f, 0.2f, 1.0f };
-        const GLfloat wingSpecular[] = { 0.35f, 0.35f, 0.2f, 1.0f };
-        const GLfloat beakAmbient[] = { 0.4f, 0.2f, 0.02f, 1.0f };
-        const GLfloat beakDiffuse[] = { 0.95f, 0.5f, 0.05f, 1.0f };
-        const GLfloat beakSpecular[] = { 0.6f, 0.4f, 0.2f, 1.0f };
-        const GLfloat eyeAmbient[] = { 0.05f, 0.05f, 0.05f, 1.0f };
-        const GLfloat eyeDiffuse[] = { 0.1f, 0.1f, 0.1f, 1.0f };
-        const GLfloat eyeSpecular[] = { 0.5f, 0.5f, 0.5f, 1.0f };
-        const GLfloat whiteAmbient[] = { 0.6f, 0.6f, 0.6f, 1.0f };
-        const GLfloat whiteDiffuse[] = { 0.9f, 0.9f, 0.9f, 1.0f };
-        const GLfloat whiteSpecular[] = { 0.3f, 0.3f, 0.3f, 1.0f };
-        const GLfloat redAmbient[] = { 0.4f, 0.0f, 0.0f, 1.0f };
-        const GLfloat redDiffuse[] = { 0.9f, 0.1f, 0.1f, 1.0f };
-        const GLfloat redSpecular[] = { 0.5f, 0.2f, 0.2f, 1.0f };
+const GLfloat bodyAmbient[] = { 0.28f, 0.2f, 0.05f, 1.0f };
+const GLfloat bodyDiffuse[] = { 0.95f, 0.8f, 0.2f, 1.0f };
+const GLfloat bodySpecular[] = { 0.5f, 0.45f, 0.28f, 1.0f };
+const GLfloat wingAmbient[] = { 0.26f, 0.18f, 0.05f, 1.0f };
+const GLfloat wingDiffuse[] = { 0.85f, 0.7f, 0.2f, 1.0f };
+const GLfloat wingSpecular[] = { 0.35f, 0.35f, 0.2f, 1.0f };
+const GLfloat beakAmbient[] = { 0.4f, 0.2f, 0.02f, 1.0f };
+const GLfloat beakDiffuse[] = { 0.95f, 0.5f, 0.05f, 1.0f };
+const GLfloat beakSpecular[] = { 0.6f, 0.4f, 0.2f, 1.0f };
+const GLfloat eyeAmbient[] = { 0.05f, 0.05f, 0.05f, 1.0f };
+const GLfloat eyeDiffuse[] = { 0.1f, 0.1f, 0.1f, 1.0f };
+const GLfloat eyeSpecular[] = { 0.5f, 0.5f, 0.5f, 1.0f };
 
-        float bodyLength = 2.6f;
-        float bodyHeight = 1.8f;
-        float bodyWidth = 1.6f;
+setMaterial(bodyAmbient, bodyDiffuse, bodySpecular, 38.0f);
+glPushMatrix();
+glScalef(1.4f, 1.0f, 2.0f);
+glutSolidSphere(0.6f, 32, 32);
+glPopMatrix();
 
-        setMaterial(bodyAmbient, bodyDiffuse, bodySpecular, 40.0f);
-        glPushMatrix();
-        glScalef(bodyWidth, bodyHeight, bodyLength);
-        glutSolidSphere(0.5f, 32, 32);
-        glPopMatrix();
+setMaterial(wingAmbient, wingDiffuse, wingSpecular, 22.0f);
+for (int side = -1; side <= 1; side += 2)
+{
+glPushMatrix();
+glTranslatef(side * 0.9f, 0.0f, -0.2f);
+glRotatef(side * 20.0f, 0.0f, 0.0f, 1.0f);
+glScalef(0.6f, 0.2f, 1.0f);
+glutSolidSphere(0.6f, 20, 20);
+glPopMatrix();
+}
 
-        setMaterial(wingAmbient, wingDiffuse, wingSpecular, 28.0f);
-        for (int side = -1; side <= 1; side += 2)
-        {
-                glPushMatrix();
-                glTranslatef(side * bodyWidth * 0.55f, 0.05f, -0.2f);
-                glRotatef(side * 25.0f, 0.0f, 0.0f, 1.0f);
-                glScalef(bodyWidth * 0.5f, bodyHeight * 0.7f, bodyLength * 0.35f);
-                glutSolidCube(1.0f);
-                glPopMatrix();
-        }
+glPushMatrix();
+glTranslatef(0.0f, -0.25f, -1.1f);
+glRotatef(35.0f, 1.0f, 0.0f, 0.0f);
+glScalef(0.6f, 0.2f, 1.0f);
+glutSolidCube(1.0f);
+glPopMatrix();
 
-        glPushMatrix();
-        glTranslatef(0.0f, -0.3f, -bodyLength * 0.45f);
-        glRotatef(25.0f, 1.0f, 0.0f, 0.0f);
-        glScalef(bodyWidth * 0.45f, 0.2f, bodyLength * 0.6f);
-        glutSolidCube(1.0f);
-        glPopMatrix();
+glPushMatrix();
+glTranslatef(0.0f, 0.8f, 0.8f);
+glRotatef(-8.0f, 1.0f, 0.0f, 0.0f);
+glScalef(0.7f, 0.7f, 0.7f);
+glutSolidSphere(0.45f, 24, 24);
 
-        setMaterial(bodyAmbient, bodyDiffuse, bodySpecular, 40.0f);
-        glPushMatrix();
-        glTranslatef(0.0f, bodyHeight * 0.65f, bodyLength * 0.2f);
-        glPushMatrix();
-        glScalef(0.9f, 0.9f, 0.9f);
-        glutSolidSphere(0.5f, 24, 24);
-        glPopMatrix();
+setMaterial(beakAmbient, beakDiffuse, beakSpecular, 25.0f);
+glPushMatrix();
+glTranslatef(0.0f, -0.1f, 0.55f);
+glutSolidCone(0.18f, 0.5f, 20, 20);
+glPopMatrix();
 
-        setMaterial(beakAmbient, beakDiffuse, beakSpecular, 25.0f);
-        glPushMatrix();
-        glTranslatef(0.0f, -0.05f, 0.55f);
-        glutSolidCone(0.22f, 0.6f, 20, 20);
-        glPopMatrix();
+setMaterial(eyeAmbient, eyeDiffuse, eyeSpecular, 80.0f);
+glPushMatrix();
+glTranslatef(0.2f, 0.15f, 0.28f);
+glScalef(0.12f, 0.12f, 0.12f);
+glutSolidSphere(0.5f, 12, 12);
+glPopMatrix();
+glPushMatrix();
+glTranslatef(-0.2f, 0.15f, 0.28f);
+glScalef(0.12f, 0.12f, 0.12f);
+glutSolidSphere(0.5f, 12, 12);
+glPopMatrix();
+glPopMatrix();
 
-        setMaterial(eyeAmbient, eyeDiffuse, eyeSpecular, 80.0f);
-        glPushMatrix();
-        glTranslatef(0.22f, 0.15f, 0.35f);
-        glScalef(0.12f, 0.12f, 0.12f);
-        glutSolidSphere(0.5f, 12, 12);
-        glPopMatrix();
+glPushMatrix();
+glTranslatef(0.0f, 0.05f, 1.2f);
+glScalef(0.75f, 0.75f, 0.75f);
+drawTarget();
+glPopMatrix();
+}
 
-        glPushMatrix();
-        glTranslatef(-0.22f, 0.15f, 0.35f);
-        glScalef(0.12f, 0.12f, 0.12f);
-        glutSolidSphere(0.5f, 12, 12);
-        glPopMatrix();
+void drawTarget()
+{
+if (!targetQuadric)
+return;
 
-        glPushMatrix();
-        glTranslatef(0.0f, -0.35f, 0.48f);
-        glRotatef(-90.0f, 1.0f, 0.0f, 0.0f);
-        setMaterial(whiteAmbient, whiteDiffuse, whiteSpecular, 30.0f);
-        gluDisk(targetQuadric, 0.0f, 0.7f, 24, 1);
-        setMaterial(redAmbient, redDiffuse, redSpecular, 30.0f);
-        gluDisk(targetQuadric, 0.0f, 0.45f, 24, 1);
-        setMaterial(whiteAmbient, whiteDiffuse, whiteSpecular, 30.0f);
-        gluDisk(targetQuadric, 0.0f, 0.22f, 24, 1);
-        glPopMatrix();
+const GLfloat rimAmbient[] = { 0.12f, 0.12f, 0.14f, 1.0f };
+const GLfloat rimDiffuse[] = { 0.5f, 0.5f, 0.55f, 1.0f };
+const GLfloat rimSpecular[] = { 0.9f, 0.9f, 0.95f, 1.0f };
+const GLfloat whiteAmbient[] = { 0.6f, 0.6f, 0.6f, 1.0f };
+const GLfloat whiteDiffuse[] = { 0.95f, 0.95f, 0.95f, 1.0f };
+const GLfloat whiteSpecular[] = { 0.3f, 0.3f, 0.3f, 1.0f };
+const GLfloat redAmbient[] = { 0.35f, 0.0f, 0.0f, 1.0f };
+const GLfloat redDiffuse[] = { 0.9f, 0.1f, 0.1f, 1.0f };
+const GLfloat redSpecular[] = { 0.4f, 0.2f, 0.2f, 1.0f };
 
-        glPopMatrix();
+float depth = 0.25f;
+
+setMaterial(rimAmbient, rimDiffuse, rimSpecular, 60.0f);
+glPushMatrix();
+glTranslatef(0.0f, 0.0f, -depth * 0.5f);
+gluCylinder(targetQuadric, 0.7f, 0.7f, depth, 32, 1);
+
+setMaterial(whiteAmbient, whiteDiffuse, whiteSpecular, 35.0f);
+gluDisk(targetQuadric, 0.0f, 0.7f, 32, 1);
+glPushMatrix();
+glTranslatef(0.0f, 0.0f, depth);
+gluDisk(targetQuadric, 0.0f, 0.7f, 32, 1);
+glPopMatrix();
+
+setMaterial(redAmbient, redDiffuse, redSpecular, 35.0f);
+gluDisk(targetQuadric, 0.0f, 0.45f, 32, 1);
+glPushMatrix();
+glTranslatef(0.0f, 0.0f, depth);
+gluDisk(targetQuadric, 0.0f, 0.45f, 32, 1);
+glPopMatrix();
+
+setMaterial(whiteAmbient, whiteDiffuse, whiteSpecular, 35.0f);
+gluDisk(targetQuadric, 0.0f, 0.22f, 32, 1);
+glPushMatrix();
+glTranslatef(0.0f, 0.0f, depth);
+gluDisk(targetQuadric, 0.0f, 0.22f, 32, 1);
+glPopMatrix();
+glPopMatrix();
 }
 
 void setMaterial(const GLfloat ambient[4], const GLfloat diffuse[4], const GLfloat specular[4], GLfloat shininess)
